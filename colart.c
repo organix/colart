@@ -30,7 +30,6 @@ THE SOFTWARE.
 #include <string.h>
 
 typedef struct vtable VTABLE, *Vtable;
-typedef struct actor_late_bind ACTOR_LATE_BIND, *ActorLateBind;
 
 struct vtable {
     int    size;
@@ -39,27 +38,22 @@ struct vtable {
     Actor  parent;
 };
 
-struct actor_late_bind {
-    ACTOR actor;
-    Actor vtable;
-};
+Actor vtable_vt_actor = 0;
+Actor actor_vt_actor  = 0;
+Actor symbol_vt_actor = 0;
 
-ActorLateBind vtable_vt_actor = 0;
-ActorLateBind actor_vt_actor  = 0;
-ActorLateBind symbol_vt_actor = 0;
+Actor s_addAction_actor          = 0;
+Actor s_addActionResponse_actor  = 0;
+Actor s_allocate_actor           = 0;
+Actor s_allocateResponse_actor   = 0;
+Actor s_delegated_actor          = 0;
+Actor s_delegatedResponse_actor  = 0;
+Actor s_intern_actor             = 0;
+Actor s_intern_response_actor    = 0;
+Actor s_lookup_actor             = 0;
+Actor s_lookup_response_actor    = 0;
 
-ActorLateBind s_addAction_actor          = 0;
-ActorLateBind s_addActionResponse_actor  = 0;
-ActorLateBind s_allocate_actor           = 0;
-ActorLateBind s_allocateResponse_actor   = 0;
-ActorLateBind s_delegated_actor          = 0;
-ActorLateBind s_delegatedResponse_actor  = 0;
-ActorLateBind s_intern_actor             = 0;
-ActorLateBind s_intern_response_actor    = 0;
-ActorLateBind s_lookup_actor             = 0;
-ActorLateBind s_lookup_response_actor    = 0;
-
-ActorLateBind symbol_actor      = 0;
+Actor symbol_actor      = 0;
 
 Pair SymbolList = 0;
 
@@ -67,20 +61,11 @@ void act_late_bound (Event e);
 void act_ground (Event e);
 void act_vtable_lookup (Event e);
 
-extern ActorLateBind 
-actor_late_bind_new(Actor vtable, Any data)
-{
-    ActorLateBind a = NEW(ACTOR_LATE_BIND);
-    TRACE_MEMORY(fprintf(stderr, "ALLOC actor_late_bind(%p)\n", a));
-    ((Actor)a)->behavior = behavior_new(act_late_bound, data);
-    a->vtable = vtable;
-    return a;
-}
-
 inline void
 config_create_late_bind(Config cfg, Any data) 
 {
-    config_enlist(cfg, (Actor)actor_late_bind_new((Actor)vtable_vt_actor, data));
+    config_enlist(cfg, actor_new(
+        behavior_new(act_late_bound, PR(vtable_vt_actor, data))));
 }
 
 void
@@ -96,9 +81,11 @@ act_late_bound (Event e)
     } else {
         Actor ground_actor = actor_new(
             behavior_new(act_ground, PR(e->actor, message->t)));
-        TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), ground_actor(%p), key(%p) TO self->vtable(%p)\n", s_lookup_actor, ground_actor, action_selector, ((ActorLateBind)e->actor)->vtable));
+        Pair context = (Pair)e->actor->behavior->context;
+        Vtable vtable = (Vtable)context->h;
+        TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), ground_actor(%p), key(%p) TO self->vtable(%p)\n", s_lookup_actor, ground_actor, action_selector, vtable));
         config_send(e->sponsor,
-            ((ActorLateBind)e->actor)->vtable,
+            (Actor)vtable, /* vtable */
             PR(s_lookup_actor, PR(ground_actor, action_selector)));
     }
     TRACE(fprintf(stderr, "%s act_late_bound\n", ">>>"));
@@ -126,7 +113,9 @@ void
 act_symbol (Event e)
 {
     TRACE(fprintf(stderr, "%s act_symbol\n", "***"));
-    char * string = (char *)e->actor->behavior->context;
+    Pair context = (Pair)e->actor->behavior->context;
+    // Vtable vtable = (Vtable)context->h;
+    char * string = (char *)context->t;
 
     Actor customer = (Actor)e->message;
 
@@ -138,7 +127,9 @@ void
 act_vtable_addAction (Event e)
 {
     TRACE(fprintf(stderr, "%s act_vtable_addAction\n", "***"));
-    Vtable vtable = (Vtable)e->actor->behavior->context;
+    Pair context = (Pair)e->actor->behavior->context;
+    // Vtable vtable = (Vtable)context->h;
+    Vtable self = (Vtable)context->t;
 
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
@@ -147,7 +138,7 @@ act_vtable_addAction (Event e)
     Action action = (Action)message->t;
 
     // FIXME: make it mutable so we don't leak memory
-    vtable->dict = dict_bind(vtable->dict, key, action);
+    self->dict = dict_bind(self->dict, key, action);
 
     TRACE(fprintf(stderr, "(late bind) SEND s_addActionResponse_actor(%p), action(%p) TO customer(%p)\n", s_addActionResponse_actor, action, customer));
     config_send(e->sponsor, customer,
@@ -162,11 +153,11 @@ act_vtable_allocate (Event e)
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
     message = (Pair)message->t;
-    Actor kind = (Actor)message->h;
+    Actor vtable = (Actor)message->h;
     long payloadSize = (long)message->t; // FIXME: might need to be int
 
-    ActorLateBind actor = actor_late_bind_new(kind, 
-        calloc(1, sizeof(Vtable) + payloadSize));
+    Actor actor = actor_new(behavior_new(act_late_bound, 
+        PR(vtable, calloc(1, payloadSize))));
 
     TRACE(fprintf(stderr, "(late bind) SEND s_allocateResponse_actor(%p), actor(%p) TO customer(%p)\n", s_allocateResponse_actor, actor, customer));
     config_send(e->sponsor, customer, PR(s_allocateResponse_actor, actor));
@@ -180,11 +171,11 @@ act_bootstrap_vtable_allocate (Event e)
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
     message = (Pair)message->t;
-    Actor kind = (Actor)message->h;
+    Actor vtable = (Actor)message->h;
     long payloadSize = (long)message->t; // FIXME: might need to be int
 
-    ActorLateBind actor = actor_late_bind_new(kind,
-        calloc(1, sizeof(Vtable) + payloadSize));
+    Actor actor = actor_new(behavior_new(act_late_bound,
+        PR(vtable, calloc(1, sizeof(Vtable) + payloadSize))));
     TRACE(fprintf(stderr, "allocated_actor(%p)\n", actor));
     TRACE(fprintf(stderr, "(fast bind) SEND actor(%p) TO customer(%p)\n", actor, customer));
     config_send(e->sponsor, customer, actor);
@@ -203,16 +194,16 @@ act_vtable_delegated (Event e)
     TRACE(fprintf(stderr, "%s act_vtable_delegated\n", "***"));
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
-    Actor kind = (Actor)message->t;
+    Actor vtable = (Actor)message->t;
 
-    ActorLateBind handle_allocate_response_actor = actor_late_bind_new(
-        e->actor, PR(customer, kind));
+    Actor handle_allocate_response_actor = actor_new(
+        behavior_new(act_late_bound, PR(e->actor, PR(customer, vtable))));
     TRACE(fprintf(stderr, "handle_allocate_response_actor(%p)\n", handle_allocate_response_actor));
-    TRACE(fprintf(stderr, "(late bind) SEND s_allocate_actor(%p), handle_allocate_response_actor(%p), kind(%p), %ld TO self(%p)\n", s_allocate_actor, handle_allocate_response_actor, kind, sizeof(VTABLE), e->actor));
+    TRACE(fprintf(stderr, "(late bind) SEND s_allocate_actor(%p), handle_allocate_response_actor(%p), kind(%p), %ld TO self(%p)\n", s_allocate_actor, handle_allocate_response_actor, vtable, sizeof(VTABLE), e->actor));
     config_send(e->sponsor, e->actor, 
         PR(s_allocate_actor, 
             PR(handle_allocate_response_actor, 
-                PR(kind, (Any)sizeof(VTABLE)))));
+                PR(vtable, (Any)sizeof(VTABLE)))));
     TRACE(fprintf(stderr, "%s act_vtable_delegated\n", ">>>"));
 }
 
@@ -221,11 +212,14 @@ act_vtable_allocate_response (Event e)
 {
     TRACE(fprintf(stderr, "%s act_vtable_allocate_response\n", "***"));
     Pair context = (Pair)e->actor->behavior->context;
-    Actor customer = (Actor)context->h;
-    Actor parent = (Actor)context->t;
+    // Vtable vtable = (Vtable)context->h;
+    Pair data = (Pair)context->t;
+    Actor customer = (Actor)data->h;
+    TRACE(fprintf(stderr, "customer %p\n", customer));
+    Actor parent = (Actor)data->t;
 
     Actor actor = (Actor)e->message;
-    Vtable child = (Vtable)actor->behavior->context;
+    Vtable child = (Vtable)((Pair)actor->behavior->context)->t;
     child->size = 2;
     child->tally = 0;
     child->dict = dict_new();
@@ -248,19 +242,19 @@ act_bootstrap_vtable_delegated (Event e)
     TRACE(fprintf(stderr, "%s act_bootstrap_vtable_delegated\n", "***"));
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
-    Actor kind = (Actor)message->t;
+    Actor vtable = (Actor)message->t;
 
     Actor bootstrap_vtable_allocate_actor = actor_new(
         behavior_new(act_bootstrap_vtable_allocate, NIL));
     TRACE(fprintf(stderr, "bootstrap_vtable_allocate_actor(%p)\n", bootstrap_vtable_allocate_actor));
     Actor bootstrap_vtable_allocate_response_actor = actor_new(
         behavior_new(act_vtable_allocate_response, 
-            PR(customer, kind)));
+            PR(0 /* vtable irrelevant */, PR(customer, vtable))));
     TRACE(fprintf(stderr, "bootstrap_vtable_allocate_response_actor(%p)\n", bootstrap_vtable_allocate_response_actor));
-    TRACE(fprintf(stderr, "(fast bind) SEND bootstrap_vtable_allocate_response_actor(%p), kind(%p), %ld TO bootstrap_vtable_allocate_actor(%p)\n", bootstrap_vtable_allocate_response_actor, kind, sizeof(VTABLE), bootstrap_vtable_allocate_actor));
+    TRACE(fprintf(stderr, "(fast bind) SEND bootstrap_vtable_allocate_response_actor(%p), kind(%p), %ld TO bootstrap_vtable_allocate_actor(%p)\n", bootstrap_vtable_allocate_response_actor, vtable, sizeof(VTABLE), bootstrap_vtable_allocate_actor));
     config_send(e->sponsor, bootstrap_vtable_allocate_actor, 
         PR(bootstrap_vtable_allocate_response_actor, 
-            PR(kind, (Any)sizeof(VTABLE))));
+            PR(vtable, (Any)sizeof(VTABLE))));
     TRACE(fprintf(stderr, "%s act_bootstrap_vtable_delegated\n", ">>>"));
 }
 
@@ -278,22 +272,24 @@ void
 act_vtable_lookup (Event e)
 {
     TRACE(fprintf(stderr, "%s act_vtable_lookup\n", "***"));
-    Vtable vtable = (Vtable)e->actor->behavior->context;
+
+    Pair context = (Pair)e->actor->behavior->context;
+    Vtable self /* vtable */ = (Vtable)context->t;
 
     Pair message = (Pair)e->message;
     Actor customer = (Actor)message->h;
     Actor key = (Actor)message->t;
 
-    Action action = dict_lookup(vtable->dict, key);
+    Action action = dict_lookup(self->dict, key);
     if (action != NULL) {
         TRACE(fprintf(stderr, "(late bind) SEND s_lookup_response_actor(%p), action(%p) TO customer(%p)\n", s_lookup_response_actor, action, customer));
         config_send(e->sponsor, customer, PR(s_lookup_response_actor, action));
         TRACE(fprintf(stderr, "%s act_vtable_lookup\n", ">>>"));
         return;
     }
-    if (vtable->parent) {
-        TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), customer(%p), key(%p) TO vtable->parent(%p)\n", s_lookup_actor, customer, key, vtable->parent));
-        config_send(e->sponsor, vtable->parent, PR(s_lookup_actor, PR(customer, key)));
+    if (self->parent) {
+        TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), customer(%p), key(%p) TO vtable->parent(%p)\n", s_lookup_actor, customer, key, self->parent));
+        config_send(e->sponsor, self->parent, PR(s_lookup_actor, PR(customer, key)));
         TRACE(fprintf(stderr, "%s act_vtable_lookup\n", ">>>"));
         return;
     }
@@ -317,7 +313,7 @@ act_symbol_intern (Event e)
     Pair pair = SymbolList;
     while (pair != NIL) {
         symbol_actor = (Actor)pair->h;
-        if (!strcmp(string, (char *)symbol_actor->behavior->context)) {
+        if (!strcmp(string, (char *)((Pair)symbol_actor->behavior->context)->t)) {
             TRACE(fprintf(stderr, "(late bind) SEND s_intern_response_actor(%p), symbol_actor(%p) TO customer(%p)\n", s_intern_response_actor, symbol_actor, customer));
             config_send(e->sponsor, customer,
                 PR(s_intern_response_actor, symbol_actor));
@@ -326,7 +322,8 @@ act_symbol_intern (Event e)
         }
         pair = pair->t;
     }   
-    symbol_actor = (Actor)actor_late_bind_new((Actor)symbol_vt_actor, string);
+    symbol_actor = actor_new(behavior_new(act_late_bound, 
+        PR(symbol_vt_actor, string)));
     SymbolList = list_push(SymbolList, symbol_actor);
     TRACE(fprintf(stderr, "(late bind) SEND s_intern_response_actor(%p), symbol_actor(%p) TO customer(%p)\n", s_intern_response_actor, symbol_actor, customer));
     config_send(e->sponsor, customer,
@@ -365,12 +362,13 @@ act_bootstrap_1 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 1));
     Pair message = (Pair)e->message;
-    vtable_vt_actor = (ActorLateBind)message->t;
-    vtable_vt_actor->vtable = (Actor)vtable_vt_actor;
-    ((Vtable)((Actor)vtable_vt_actor)->behavior->context)->parent = (Actor)vtable_vt_actor;
+    vtable_vt_actor = (Actor)message->t;
+    Pair vtable_vt_actor_context = (Pair)vtable_vt_actor->behavior->context;
+    vtable_vt_actor_context->h /* vtable */ = vtable_vt_actor;
+    ((Vtable)vtable_vt_actor_context->t)->parent = vtable_vt_actor;
     TRACE(fprintf(stderr, "vtable_vt_actor(%p)\n", vtable_vt_actor));
-    TRACE(fprintf(stderr, "vtable_vt_actor->vtable(%p)\n", vtable_vt_actor->vtable));
-    TRACE(fprintf(stderr, "vtable_vt_actor->vtable->parent(%p)\n", ((Vtable)((Actor)vtable_vt_actor)->behavior->context)->parent));
+    TRACE(fprintf(stderr, "vtable_vt_actor->vtable(%p)\n", vtable_vt_actor_context->h));
+    TRACE(fprintf(stderr, "vtable_vt_actor->vtable->parent(%p)\n", ((Vtable)vtable_vt_actor_context->t)->parent));
 
     actor_become(e->actor, behavior_new(act_bootstrap_2, NIL));
     TRACE(fprintf(stderr, "(fast bind) SEND bootstrap_actor(%p), 0 TO bootstrap_vtable_delegated_actor(%p)\n", e->actor, bootstrap_vtable_delegated_actor));
@@ -391,13 +389,14 @@ act_bootstrap_2 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 2));
     Pair message = (Pair)e->message;
-    actor_vt_actor = (ActorLateBind)message->t;
-    actor_vt_actor->vtable = (Actor)vtable_vt_actor;
-    ((Vtable)((Actor)actor_vt_actor)->behavior->context)->parent = (Actor)vtable_vt_actor;
+    actor_vt_actor = (Actor)message->t;
+    Pair actor_vt_actor_context = (Pair)actor_vt_actor->behavior->context;
+    actor_vt_actor_context->h /* vtable */ = vtable_vt_actor;
+    ((Vtable)actor_vt_actor_context->t)->parent = vtable_vt_actor;
     TRACE(fprintf(stderr, "actor_vt_actor(%p)\n", actor_vt_actor));
-    TRACE(fprintf(stderr, "actor_vt_actor->vtable(%p)\n", actor_vt_actor->vtable));
-    TRACE(fprintf(stderr, "actor_vt_actor->vtable->parent(%p)\n", ((Vtable)((Actor)actor_vt_actor)->behavior->context)->parent));
-    TRACE(fprintf(stderr, "vtable_vt_actor->vtable->parent(%p)\n", ((Vtable)((Actor)vtable_vt_actor)->behavior->context)->parent));
+    TRACE(fprintf(stderr, "actor_vt_actor->vtable(%p)\n", actor_vt_actor_context->h /* vtable */));
+    TRACE(fprintf(stderr, "actor_vt_actor->vtable->parent(%p)\n", ((Vtable)actor_vt_actor_context->t)->parent));
+    TRACE(fprintf(stderr, "vtable_vt_actor->vtable->parent(%p)\n", ((Vtable)((Pair)vtable_vt_actor->behavior->context)->t)->parent));
 
     actor_become(e->actor, behavior_new(act_bootstrap_3, NIL));
     TRACE(fprintf(stderr, "(fast bind) SEND bootstrap_actor(%p), actor_vt_actor(%p) TO bootstrap_vtable_delegated_actor(%p)\n", e->actor, actor_vt_actor, bootstrap_vtable_delegated_actor));
@@ -417,11 +416,12 @@ act_bootstrap_3 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 3));
     Pair message = (Pair)e->message;
-    symbol_vt_actor = (ActorLateBind)message->t;
+    symbol_vt_actor = (Actor)message->t;
+    Pair symbol_vt_actor_context = (Pair)symbol_vt_actor->behavior->context;
     TRACE(fprintf(stderr, "symbol_vt_actor(%p)\n", symbol_vt_actor));
-    TRACE(fprintf(stderr, "symbol_vt_actor->vtable(%p)\n", symbol_vt_actor->vtable));
-    TRACE(fprintf(stderr, "symbol_vt_actor->vtable->parent(%p)\n", ((Vtable)((Actor)symbol_vt_actor)->behavior->context)->parent));
-    TRACE(fprintf(stderr, "actor_vt_actor->vtable->parent(%p)\n", ((Vtable)((Actor)actor_vt_actor)->behavior->context)->parent));
+    TRACE(fprintf(stderr, "symbol_vt_actor->vtable(%p)\n", symbol_vt_actor_context->h /* vtable */));
+    TRACE(fprintf(stderr, "symbol_vt_actor->vtable->parent(%p)\n", ((Vtable)symbol_vt_actor_context->t)->parent));
+    TRACE(fprintf(stderr, "actor_vt_actor->vtable->parent(%p)\n", ((Vtable)((Pair)actor_vt_actor->behavior->context)->t)->parent));
 
     SymbolList = list_new();
 
@@ -453,11 +453,11 @@ act_bootstrap_4 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 4));
     Pair message = (Pair)e->message;
-    s_lookup_actor = (ActorLateBind)message->t;
+    s_lookup_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_lookup_actor(%p)\n", s_lookup_actor));
 
     bootstrap_vtable_addAction_actor = actor_new(
-        behavior_new(act_vtable_addAction, ((Actor)vtable_vt_actor)->behavior->context));
+        behavior_new(act_vtable_addAction, vtable_vt_actor->behavior->context));
     TRACE(fprintf(stderr, "bootstrap_vtable_addAction_actor(%p)\n", bootstrap_vtable_addAction_actor));
     TRACE(fprintf(stderr, "(fast bind) SEND sink_actor(%p), s_lookup_actor(%p), act_vtable_lookup(%p) TO bootstrap_vtable_addAction_actor(%p)\n", &sink_actor, s_lookup_actor, act_vtable_lookup, bootstrap_vtable_addAction_actor));
     config_send(e->sponsor, bootstrap_vtable_addAction_actor,
@@ -479,7 +479,7 @@ act_bootstrap_5 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 5));
     Pair message = (Pair)e->message;
-    s_lookup_response_actor = (ActorLateBind)message->t;
+    s_lookup_response_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_lookup_response_actor(%p)\n", s_lookup_response_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_6, NIL));
@@ -500,7 +500,7 @@ act_bootstrap_6 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 6));
     Pair message = (Pair)e->message;
-    s_addAction_actor = (ActorLateBind)message->t;
+    s_addAction_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_addAction_actor(%p)\n", s_addAction_actor));
 
     TRACE(fprintf(stderr, "(fast bind) SEND sink_actor(%p), s_addAction_actor(%p), act_vtable_addAction(%p) TO bootstrap_vtable_addAction_actor(%p)\n", &sink_actor, s_addAction_actor, act_vtable_addAction, bootstrap_vtable_addAction_actor));
@@ -523,7 +523,7 @@ act_bootstrap_7 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 7));
     Pair message = (Pair)e->message;
-    s_addActionResponse_actor = (ActorLateBind)message->t;
+    s_addActionResponse_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_addActionResponse_actor(%p)\n", s_addActionResponse_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_8, NIL));
@@ -551,7 +551,7 @@ act_bootstrap_8 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 8));
     Pair message = (Pair)e->message;
-    s_allocate_actor = (ActorLateBind)message->t;
+    s_allocate_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_allocate_actor(%p)\n", s_allocate_actor));
 
     // being using config_dispatch_late_bind()
@@ -579,7 +579,7 @@ act_bootstrap_9 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 9));
     Pair message = (Pair)e->message;
-    symbol_actor = (ActorLateBind)message->t;
+    symbol_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "symbol_actor(%p)\n", symbol_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_10, NIL));
@@ -601,7 +601,7 @@ act_bootstrap_10 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 10));
     Pair message = (Pair)e->message;
-    s_intern_actor = (ActorLateBind)message->t;
+    s_intern_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_intern_actor(%p)\n", s_intern_actor));
 
     // use config_dispatch_late_bind()
@@ -627,7 +627,7 @@ act_bootstrap_11 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 11));
     Pair message = (Pair)e->message;
-    s_intern_response_actor = (ActorLateBind)message->t;
+    s_intern_response_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_intern_response_actor(%p)\n", s_intern_response_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_12, NIL));
@@ -654,7 +654,7 @@ act_bootstrap_12 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 12));
     Pair message = (Pair)e->message;
-    s_delegated_actor = (ActorLateBind)message->t;
+    s_delegated_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_delegated_actor(%p)\n", s_delegated_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_13, NIL));
@@ -674,7 +674,7 @@ act_bootstrap_13 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 13));
     Pair message = (Pair)e->message;
-    s_delegatedResponse_actor = (ActorLateBind)message->t;
+    s_delegatedResponse_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_delegatedResponse_actor(%p)\n", s_delegatedResponse_actor));
 
     actor_become(e->actor, behavior_new(act_bootstrap_14, NIL));
@@ -709,7 +709,7 @@ act_bootstrap_15 (Event e)
 {
     TRACE(fprintf(stderr, "*** act_bootstrap_%d\n", 15));
     Pair message = (Pair)e->message;
-    s_allocateResponse_actor = (ActorLateBind)message->t;
+    s_allocateResponse_actor = (Actor)message->t;
     TRACE(fprintf(stderr, "s_allocateResponse_actor(%p)\n", s_allocateResponse_actor));
     TRACE(fprintf(stderr, "*** bootstrap completed %s\n", "***"));
     TRACE(fprintf(stderr, "%s act_bootstrap_15\n", ">>>"));
