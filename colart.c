@@ -62,7 +62,7 @@ void act_ground (Event e);
 void act_vtable_lookup (Event e);
 
 inline void
-config_create_late_bind(Config cfg, Any data) 
+config_create_late_bound(Config cfg, Any data) 
 {
     config_enlist(cfg, actor_new(
         behavior_new(act_late_bound, PR(vtable_vt_actor, data))));
