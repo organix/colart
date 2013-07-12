@@ -259,16 +259,6 @@ act_bootstrap_vtable_delegated (Event e)
 }
 
 void
-act_lookup_failed_notification (Event e)
-{
-    Actor actor = (Actor)e->actor->behavior->context;
-
-    char *string = (char *)e->message;
-
-    fprintf(stderr, "lookup failed %p %s\n", actor, string);
-}
-
-void
 act_vtable_lookup (Event e)
 {
     TRACE(fprintf(stderr, "%s act_vtable_lookup\n", "***"));
@@ -293,11 +283,8 @@ act_vtable_lookup (Event e)
         TRACE(fprintf(stderr, "%s act_vtable_lookup\n", ">>>"));
         return;
     }
-
-    Actor lookup_failed_notification_actor = actor_new(
-        behavior_new(act_lookup_failed_notification, e->actor));
-    TRACE(fprintf(stderr, "(late bind) SEND key(%p) TO lookup_failed_notification_actor(%p)\n", key, lookup_failed_notification_actor));
-    config_send(e->sponsor, lookup_failed_notification_actor, key);
+    
+    fprintf(stderr, "lookup failed %p %s\n", e->actor, (char *)((Pair)key->behavior->context)->t);
     TRACE(fprintf(stderr, "%s act_vtable_lookup\n", ">>>"));
 }
 
@@ -729,7 +716,6 @@ main()
     TRACE(fprintf(stderr, "act_vtable_delegated(%p)\n", act_vtable_delegated));
     TRACE(fprintf(stderr, "act_vtable_allocate_response(%p)\n", act_vtable_allocate_response));
     TRACE(fprintf(stderr, "act_bootstrap_vtable_delegated(%p)\n", act_bootstrap_vtable_delegated));
-    TRACE(fprintf(stderr, "act_lookup_failed_notification(%p)\n", act_lookup_failed_notification));
     TRACE(fprintf(stderr, "act_vtable_lookup(%p)\n", act_vtable_lookup));
     TRACE(fprintf(stderr, "act_symbol_intern(%p)\n", act_symbol_intern));
     TRACE(fprintf(stderr, "act_bootstrap_1(%p)\n", act_bootstrap_1));
