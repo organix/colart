@@ -44,16 +44,6 @@ struct actor_late_bind {
     Actor vtable;
 };
 
-extern ActorLateBind 
-actor_late_bind_new(Actor vtable, Any data)
-{
-    ActorLateBind a = NEW(ACTOR_LATE_BIND);
-    TRACE_MEMORY(fprintf(stderr, "ALLOC actor_late_bind(%p)\n", a));
-    ((Actor)a)->behavior = behavior_new(0, data); // NO ACTION ON ACTOR CREATION
-    a->vtable = vtable;
-    return a;
-}
-
 ActorLateBind vtable_vt_actor = 0;
 ActorLateBind actor_vt_actor  = 0;
 ActorLateBind symbol_vt_actor = 0;
@@ -73,8 +63,19 @@ ActorLateBind symbol_actor      = 0;
 
 Pair SymbolList = 0;
 
+void act_late_bound (Event e);
 void act_ground (Event e);
 void act_vtable_lookup (Event e);
+
+extern ActorLateBind 
+actor_late_bind_new(Actor vtable, Any data)
+{
+    ActorLateBind a = NEW(ACTOR_LATE_BIND);
+    TRACE_MEMORY(fprintf(stderr, "ALLOC actor_late_bind(%p)\n", a));
+    ((Actor)a)->behavior = behavior_new(act_late_bound, data);
+    a->vtable = vtable;
+    return a;
+}
 
 inline void
 config_create_late_bind(Config cfg, Any data) 
@@ -82,56 +83,25 @@ config_create_late_bind(Config cfg, Any data)
     config_enlist(cfg, (Actor)actor_late_bind_new((Actor)vtable_vt_actor, data));
 }
 
-int 
-config_dispatch_late_bind(Config cfg)
+void
+act_late_bound (Event e)
 {
-    if (queue_empty_p(cfg->event_q)) {
-        return 0;
+    TRACE(fprintf(stderr, "%s act_late_bound\n", "***"));
+    Pair message = (Pair)e->message;
+    Actor action_selector = (Actor)message->h;
+    // TRACE(fprintf(stderr, "action_selector(%p), s_lookup_actor(%p), e->actor(%p), vtable_vt_actor(%p)\n", action_selector, s_lookup_actor, e->actor, vtable_vt_actor));
+    if ((action_selector == (Actor)s_lookup_actor) && (e->actor == (Actor)vtable_vt_actor)) {
+        e->message = message->t;
+        act_vtable_lookup(e); // top level lookup, ground out
+    } else {
+        Actor ground_actor = actor_new(
+            behavior_new(act_ground, PR(e->actor, message->t)));
+        TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), ground_actor(%p), key(%p) TO self->vtable(%p)\n", s_lookup_actor, ground_actor, action_selector, ((ActorLateBind)e->actor)->vtable));
+        config_send(e->sponsor,
+            ((ActorLateBind)e->actor)->vtable,
+            PR(s_lookup_actor, PR(ground_actor, action_selector)));
     }
-    Event e = queue_take(cfg->event_q);
-    // FIXME: ***ALL THIS DISPATCH CODE NEEDS TO BE BEHAVIOR OF LATE BOUND ACTOR!!!!!!***
-    // eliminate the need to have a separate dispatch_late_bind
-    // want config_dispatch to do the right thing all the time without changing config_dispatch
-    // this implies that a behavior of a late_bound actor has to initiate the search for the
-    // actual behavior... that means at first step it does a dictionary lookup in current
-    // vtable..
-    // follow on.. it may be possible to eliminate the ground_out customer that
-    // -> strategy for doing that is that lookup logic itself will invoke..
-    // -> SEND receiver **to** the action (via lookup process) and lookup process
-    // will execute the action 
-    // .. it may be possible to create a one-shot and allow config_dispatch to deal with it
-    //    instead of dispatching directly in act_vtable_lookup()
-    // get rid of config_dispatch_late_bind
-    // refactor #3 ... look at actor.c and don't hard bind to Pair but
-    // use list/queue/dict
-    if (e->actor->behavior->action == act_ground) {
-        act_ground(e); // invoke ground behavior (binding of "this" context)
-    } else if (e->actor != &sink_actor) { 
-        // FIXME: fix config_dispatch/config_dispatch_late_bind count to get rid of this
-        // FIXME: instead of using &sink_actor use a sentinel like 0 or similar
-        // FIXME: better yet, use sink_actor_late_bind!!! <-- this is right!!
-        // FIXME: the sink **behavior** is important, other actors will become
-        //        need to deal with that; also need _maybe_ a sink_behavior_late_bind ?
-        Pair message = (Pair)e->message;
-        Actor action_selector = (Actor)message->h;
-        // TRACE(fprintf(stderr, "action_selector(%p), s_lookup_actor(%p), e->actor(%p), vtable_vt_actor(%p)\n", action_selector, s_lookup_actor, e->actor, vtable_vt_actor));
-        if ((action_selector == (Actor)s_lookup_actor) && (e->actor == (Actor)vtable_vt_actor)) {
-            e->message = message->t;
-            act_vtable_lookup(e); // top level lookup, ground out
-        } else {
-            // most likely get rid of ground_actor
-            Actor ground_actor = actor_new(
-                behavior_new(act_ground, PR(e->actor, message->t)));
-            TRACE(fprintf(stderr, "ground_actor(%p)\n", ground_actor));
-            TRACE(fprintf(stderr, "(late bind) SEND s_lookup_actor(%p), ground_actor(%p), key(%p) TO self->vtable(%p)\n", s_lookup_actor, ground_actor, message->h, ((ActorLateBind)e->actor)->vtable));
-            config_send(e->sponsor, 
-                ((ActorLateBind)e->actor)->vtable, 
-                PR(s_lookup_actor, PR(ground_actor, (Actor)message->h)));
-        }
-    }
-    TRACE_MEMORY(fprintf(stderr, "FREE event(%p)\n", e));
-    e = FREE(e); // FIXME: KEEP HISTORY HERE?
-    return 1;
+    TRACE(fprintf(stderr, "%s act_late_bound\n", ">>>"));
 }
 
 void
@@ -143,25 +113,12 @@ act_ground (Event e)
     Any args = (Any)context->t;
 
     Pair message = (Pair)e->message;
-    // s_lookupResponse_actor = (Actor)message->h;
     Action action = (Action)message->t;
 
-    // FIXME: rename e2 to awesome e_fast
-    // receiver->behavior->action = action;
-    Event e2 = event_new(e->sponsor, receiver, args);
+    Event ground_event = event_new(e->sponsor, receiver, args);
 
-    Actor ground_actor = e->actor;
-
-    e->actor = receiver;
-    e->actor->behavior->action = action;
-
-    TRACE_MEMORY(fprintf(stderr, "FREE behavior(%p)\n", ground_actor->behavior));
-    ground_actor->behavior = FREE(ground_actor->behavior); // free memory after one-shot
-    
-    e->message = args;
-    TRACE(fprintf(stderr, "(ground bind) executing action(%p) on self(%p)\n", e->actor->behavior->action, e->actor));
-    // (e->actor->behavior->action)(e); // INVOKE ACTOR BEHAVIOR
-    action(e); // INVOKE ACTOR BEHAVIOR
+    TRACE(fprintf(stderr, "(ground bind) executing action(%p) on self(%p)\n", action, receiver));
+    action(ground_event); // INVOKE ACTOR BEHAVIOR
     TRACE(fprintf(stderr, "%s act_ground\n", ">>>"));
 }
 
@@ -801,39 +758,6 @@ main()
     TRACE(fprintf(stderr, "(fast bind) SEND bootstrap_actor(%p), 0 TO bootstrap_vtable_delegated_actor(%p)\n", bootstrap_actor, bootstrap_vtable_delegated_actor));
     config_send(config, bootstrap_vtable_delegated_actor, 
         PR(bootstrap_actor, 0));
-    for (i = 0; i < 26; ++i) {
-        config_dispatch(config);
-    }
-    for (i = 0; i < 10; ++i) {
-        config_dispatch_late_bind(config);
-    }
-    for (i = 0; i < 3; ++i) {
-        config_dispatch(config);
-    }
-    // reached act_bootstrap_10
-    config_dispatch_late_bind(config);
-    config_dispatch(config);
-    config_dispatch_late_bind(config);
-    config_dispatch(config);
-    for (i = 0; i < 13; ++i) {
-        config_dispatch_late_bind(config);
-    }
-    config_dispatch(config);
-    for (i = 0; i < 8; ++i) {
-        config_dispatch_late_bind(config);
-    }
-    config_dispatch(config);
-    // reached act_bootstrap_13
-    for (i = 0; i < 3; ++i) {
-        config_dispatch_late_bind(config);
-    }
-    config_dispatch(config);
-    // reached act_bootstrap_14
-    for (i = 0; i < 8; ++i) {
-        config_dispatch_late_bind(config);
-    }
-    config_dispatch(config);
-    // we are fully bootstrapped, from now on should just be able to:
-    while(config_dispatch_late_bind(config))
+    while(config_dispatch(config))
         ;
 }
